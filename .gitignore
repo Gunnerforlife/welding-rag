@@ -1,0 +1,4 @@
+/venv
+/__pycache__
+.env# Add secrets.toml to .gitignore if it doesn't exist
+.streamlit/secrets.toml
