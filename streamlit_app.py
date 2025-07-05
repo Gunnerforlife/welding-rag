@@ -17,6 +17,10 @@ def load_secrets():
                 os.environ['ASME_PDF_PATH'] = st.secrets['ASME_PDF_PATH']
             if 'WPS_JSON_PATH' in st.secrets:
                 os.environ['WPS_JSON_PATH'] = st.secrets['WPS_JSON_PATH']
+            if 'AUTH_USERNAME' in st.secrets:
+                os.environ['AUTH_USERNAME'] = st.secrets['AUTH_USERNAME']
+            if 'AUTH_PASSWORD' in st.secrets:
+                os.environ['AUTH_PASSWORD'] = st.secrets['AUTH_PASSWORD']
                 
     except Exception as e:
         st.warning(f"Could not load secrets: {e}")
@@ -32,7 +36,7 @@ def init_welding_api():
 
 # Authentication function
 def authenticate_user():
-    """Simple authentication system"""
+    """Simple authentication system using secrets"""
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
     
@@ -47,14 +51,22 @@ def authenticate_user():
             password = st.text_input("Password", type="password", placeholder="Enter password")
             
             if st.button("Login", type="primary", use_container_width=True):
-                # Simple authentication (in production, use proper authentication)
-                if username == "admin" and password == "welding2024":
+                # Get credentials from secrets
+                try:
+                    valid_username = st.secrets.get('AUTH_USERNAME', 'admin')
+                    valid_password = st.secrets.get('AUTH_PASSWORD', 'welding2024')
+                except (AttributeError, FileNotFoundError):
+                    # Fallback to environment variables or defaults
+                    valid_username = os.environ.get('AUTH_USERNAME', 'admin')
+                    valid_password = os.environ.get('AUTH_PASSWORD', 'welding2024')
+                
+                if username == valid_username and password == valid_password:
                     st.session_state.authenticated = True
                     st.session_state.username = username
                     st.rerun()
                 else:
                     st.error("Invalid credentials. Please try again.")
-                    st.info("Demo credentials: admin / welding2024")
+                    st.info("Check your .streamlit/secrets.toml for valid credentials")
         
         return False
     
