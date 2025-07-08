@@ -126,27 +126,30 @@ class WeldingRecommendationAPI:
             logger.warning(f"Could not normalize P/G number: {pg_str}")
             return None
     
-    def _check_pg_compatibility(self, base_pg: Optional[int], filler_pg: Optional[int]) -> bool:
-        """Check if P/G numbers are compatible"""
-        if base_pg is None or filler_pg is None:
+    def _check_pg_compatibility(self, from_p: Optional[int], from_g: Optional[int], 
+                              to_p: Optional[int], to_g: Optional[int],
+                              wps_from_p: Optional[int], wps_from_g: Optional[int],
+                              wps_to_p: Optional[int], wps_to_g: Optional[int]) -> bool:
+        """Check if P/G numbers are compatible between input materials and WPS materials"""
+        # If any critical P number is missing, we can't verify compatibility
+        if None in [from_p, to_p, wps_from_p, wps_to_p]:
             return False
         
-        # Basic compatibility logic - can be enhanced based on ASME standards
-        if base_pg == filler_pg:
-            return True
+        # Direct match - both materials should match their respective P AND G numbers
+        direct_match = (
+            from_p == wps_from_p and to_p == wps_to_p and
+            (from_g == wps_from_g or from_g is None or wps_from_g is None) and
+            (to_g == wps_to_g or to_g is None or wps_to_g is None)
+        )
         
-        # Some common compatibility rules (simplified)
-        compatible_groups = [
-            {1, 2, 3},  # Low carbon steels
-            {4, 5, 6},  # Low alloy steels
-            {8, 9, 10}, # Stainless steels
-        ]
+        # Reverse match - materials could be swapped (from->to, to->from)
+        reverse_match = (
+            from_p == wps_to_p and to_p == wps_from_p and
+            (from_g == wps_to_g or from_g is None or wps_to_g is None) and
+            (to_g == wps_from_g or to_g is None or wps_from_g is None)
+        )
         
-        for group in compatible_groups:
-            if base_pg in group and filler_pg in group:
-                return True
-        
-        return False
+        return direct_match or reverse_match
     
     def _fallback_material_match(self, base_material: str, filler_material: str) -> bool:
         """Fallback matching by material name similarity"""
@@ -162,8 +165,8 @@ class WeldingRecommendationAPI:
         
         return False
     
-    def _check_thickness_compatibility(self, base_thickness: float, wps_thickness_range: str) -> bool:
-        """Check if base thickness falls within WPS thickness range"""
+    def _check_thickness_compatibility(self, input_thickness: float, wps_thickness_range: str) -> bool:
+        """Check if input thickness falls within WPS thickness range (both in mm)"""
         try:
             # Handle different formats in qualified_thick field
             thickness_str = wps_thickness_range.strip()
@@ -172,18 +175,17 @@ class WeldingRecommendationAPI:
             if not thickness_str or thickness_str.upper() in ['NA', 'ALL', 'VN']:
                 return True  # Accept if no restrictions
             
-            # Convert input thickness from inches to mm for comparison (assuming JSON is in mm)
-            base_thickness_mm = base_thickness * 25.4
+            # Both input and WPS thickness are in mm, no conversion needed
             
             # Handle ">" format (e.g., ">25")
             if thickness_str.startswith('>'):
                 min_thickness = float(thickness_str[1:])
-                return base_thickness_mm >= min_thickness
+                return input_thickness >= min_thickness
             
             # Handle "<" format (e.g., "<50")
             if thickness_str.startswith('<'):
                 max_thickness = float(thickness_str[1:])
-                return base_thickness_mm <= max_thickness
+                return input_thickness <= max_thickness
             
             # Handle range format (e.g., "5-72", "1.5-11.12")
             if '-' in thickness_str:
@@ -191,58 +193,105 @@ class WeldingRecommendationAPI:
                 if len(parts) == 2:
                     min_thickness = float(parts[0].strip())
                     max_thickness = float(parts[1].strip())
-                    return min_thickness <= base_thickness_mm <= max_thickness
+                    return min_thickness <= input_thickness <= max_thickness
             else:
                 # Single thickness value
                 target_thickness = float(thickness_str)
                 # Allow some tolerance (±20% or ±2mm, whichever is smaller)
                 tolerance = min(target_thickness * 0.2, 2.0)
-                return abs(base_thickness_mm - target_thickness) <= tolerance
+                return abs(input_thickness - target_thickness) <= tolerance
                 
         except (ValueError, TypeError) as e:
             logger.warning(f"Could not parse thickness range: {wps_thickness_range} - {e}")
             return True  # Accept if we can't parse (conservative approach)
         
         return False
+
+
     
     def _extract_welding_processes(self, electrode_info: str) -> List[str]:
         """Extract welding processes from electrode information"""
         processes = []
-        electrode_lower = electrode_info.lower()
+        electrode_lower = electrode_info.lower().replace(' ', '').replace('-', '')
         
-        # Map electrode types to welding processes
-        process_mapping = {
-            'e60': 'SMAW',
-            'e70': 'SMAW',
-            'e80': 'SMAW',
-            'e90': 'SMAW',
-            'er70': 'GMAW',
-            'er80': 'GMAW',
-            'er90': 'GMAW',
-            'er316': 'GTAW',
-            'er308': 'GTAW',
-            'flux': 'SAW',
-            'mig': 'GMAW',
-            'tig': 'GTAW',
-            'stick': 'SMAW',
-            'arc': 'SMAW'
-        }
+        # Define process patterns (order matters - more specific first)
+        process_patterns = [
+            # FCAW (Flux Cored Arc Welding) - check first as it's specific
+            ('eh10k', 'FCAW'),
+            ('eh14', 'FCAW'),
+            ('e71t', 'FCAW'),
+            ('e81t', 'FCAW'),
+            
+            # SMAW (Shielded Metal Arc Welding) - E prefix electrodes
+            ('e7018', 'SMAW'),
+            ('e6010', 'SMAW'),
+            ('e6013', 'SMAW'),
+            ('e316l', 'SMAW'),  # E316L is SMAW
+            ('e308l', 'SMAW'),  # E308L is SMAW
+            ('e309l', 'SMAW'),  # E309L is SMAW
+            ('e316', 'SMAW'),
+            ('e308', 'SMAW'),
+            ('e309', 'SMAW'),
+            ('e60', 'SMAW'),
+            ('e70', 'SMAW'),
+            ('e80', 'SMAW'),
+            ('e90', 'SMAW'),
+            
+            # GTAW (Gas Tungsten Arc Welding) - ER stainless steel filler rods
+            ('er316l', 'GTAW'),
+            ('er308l', 'GTAW'),
+            ('er309l', 'GTAW'),
+            ('er321', 'GTAW'),
+            ('er347', 'GTAW'),
+            ('er316', 'GTAW'),
+            ('er308', 'GTAW'),
+            ('er309', 'GTAW'),
+            
+            # GMAW (Gas Metal Arc Welding) - ER carbon steel solid wires
+            ('er70s', 'GMAW'),
+            ('er80s', 'GMAW'),
+            ('er90s', 'GMAW'),
+            ('er70', 'GMAW'),
+            ('er80', 'GMAW'),
+            ('er90', 'GMAW'),
+            
+            # SAW (Submerged Arc Welding)
+            ('flux', 'SAW'),
+            ('saw', 'SAW'),
+            ('submerged', 'SAW'),
+            
+            # Process keywords
+            ('mig', 'GMAW'),
+            ('tig', 'GTAW'),
+            ('stick', 'SMAW'),
+            ('arc', 'SMAW')
+        ]
         
-        for electrode_type, process in process_mapping.items():
-            if electrode_type in electrode_lower:
-                if process not in processes:
-                    processes.append(process)
+        # Split by common delimiters to handle multiple electrodes
+        parts = electrode_lower.replace('&', ',').replace(';', ',').split(',')
+        
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+                
+            # Check each pattern against this part
+            for pattern, process in process_patterns:
+                if pattern in part:
+                    if process not in processes:
+                        processes.append(process)
+                    break  # Found a match, don't check other patterns for this part
         
         return processes if processes else ['SMAW']  # Default to SMAW
     
-    def _find_matching_wps(self, base_material: str, filler_material: str, 
-                          base_thickness: float, joint_type: str = "Butt", pwht_required: str = "Any") -> List[Dict]:
+    def _find_matching_wps(self, from_material: str, to_material: str, 
+                          thickness: float, joint_type: str = "Butt", pwht_required: str = "Any") -> List[Dict]:
         """Find matching WPS based on materials, thickness, and PWHT requirements"""
         matching_wps = []
         
-        # First try ASME RAG for P/G numbers
-        base_pg_info = self._query_asme_rag_pg_numbers(base_material)
-        filler_pg_info = self._query_asme_rag_pg_numbers(filler_material)
+        # Get ASME RAG info for both materials
+        from_material_rag_info = self._query_asme_rag_pg_numbers(from_material)
+        to_material_rag_info = self._query_asme_rag_pg_numbers(to_material)
         
         for wps in self.welding_procedures:
             try:
@@ -259,31 +308,65 @@ class WeldingRecommendationAPI:
                 # Material compatibility check
                 material_compatible = False
                 
-                if base_pg_info and filler_pg_info:
-                    # Use P/G number matching
-                    base_pg = self._normalize_pg_number(base_pg_info.get('p_no'))
-                    filler_pg = self._normalize_pg_number(filler_pg_info.get('p_no'))
-                    material_compatible = self._check_pg_compatibility(base_pg, filler_pg)
+                if from_material_rag_info and to_material_rag_info:
+                    # Use P/G number matching for both materials
+                    from_p = self._normalize_pg_number(from_material_rag_info.get('p_no'))
+                    from_g = self._normalize_pg_number(from_material_rag_info.get('g_no'))
+                    to_p = self._normalize_pg_number(to_material_rag_info.get('p_no'))
+                    to_g = self._normalize_pg_number(to_material_rag_info.get('g_no'))
+                    wps_from_p = self._normalize_pg_number(wps.get('p_from'))
+                    wps_from_g = self._normalize_pg_number(wps.get('g_from'))
+                    wps_to_p = self._normalize_pg_number(wps.get('p_to'))
+                    wps_to_g = self._normalize_pg_number(wps.get('g_to'))
+                    
+                    material_compatible = self._check_pg_compatibility(
+                        from_p, from_g, to_p, to_g, 
+                        wps_from_p, wps_from_g, wps_to_p, wps_to_g
+                    )
                 else:
                     # Fallback to material name matching
-                    wps_base_material = wps.get('material_from', '')  # Updated field name
-                    wps_filler_material = wps.get('material_to', '')    # Updated field name
+                    wps_from_material = wps.get('material_from', '')
+                    wps_to_material = wps.get('material_to', '')
                     
-                    material_compatible = (
-                        self._fallback_material_match(base_material, wps_base_material) and
-                        self._fallback_material_match(filler_material, wps_filler_material)
+                    # Check both direct and reverse material matching
+                    direct_match = (
+                        self._fallback_material_match(from_material, wps_from_material) and
+                        self._fallback_material_match(to_material, wps_to_material)
                     )
+                    reverse_match = (
+                        self._fallback_material_match(from_material, wps_to_material) and
+                        self._fallback_material_match(to_material, wps_from_material)
+                    )
+                    
+                    material_compatible = direct_match or reverse_match
                 
                 if not material_compatible:
                     continue
                 
                 # Check thickness compatibility using qualified_thick field
                 wps_thickness = wps.get('qualified_thick', '')
-                if wps_thickness and not self._check_thickness_compatibility(base_thickness, wps_thickness):
+                if wps_thickness and not self._check_thickness_compatibility(thickness, wps_thickness):
                     continue
                 
                 # If we get here, the WPS is compatible
-                matching_wps.append(wps)
+                # Use the actual welding process field from JSON instead of inferring from electrode
+                wps_with_process = wps.copy()
+                # The welding process is now directly available in the JSON
+                welding_process = wps.get('welding_process', '')
+                if welding_process:
+                    # Convert single process string to list for consistency
+                    if isinstance(welding_process, str):
+                        # Split on + to handle combined processes like "GTAW + SMAW"
+                        processes = [p.strip() for p in welding_process.split('+')]
+                    else:
+                        processes = welding_process
+                    wps_with_process['welding_process'] = processes
+                else:
+                    # Fallback to inferring from electrode if welding_process is empty
+                    electrode_info = wps.get('electrode', '')
+                    processes = self._extract_welding_processes(electrode_info)
+                    wps_with_process['welding_process'] = processes
+                matching_wps.append(wps_with_process)
                 
             except Exception as e:
                 logger.warning(f"Error processing WPS {wps.get('wps_no', 'Unknown')}: {e}")
@@ -291,34 +374,26 @@ class WeldingRecommendationAPI:
         
         return matching_wps
     
-    def get_welding_recommendations(self, base_material: str, filler_material: str,
-                                  base_thickness: float, joint_type: str = "Butt", pwht_required: str = "Any") -> str:
+    def get_welding_recommendations(self, from_material: str, to_material: str,
+                                  thickness: float, joint_type: str = "Butt", pwht_required: str = "Any") -> str:
         """Get welding recommendations as JSON string"""
         try:
-            matching_wps = self._find_matching_wps(base_material, filler_material, base_thickness, joint_type, pwht_required)
+            matching_wps = self._find_matching_wps(from_material, to_material, thickness, joint_type, pwht_required)
             
             # Limit to 5 WPS
             limited_wps = matching_wps[:5]
             
-            # Extract recommended processes
-            recommended_processes = set()
-            for wps in limited_wps:
-                electrode_info = wps.get('electrode', '')
-                processes = self._extract_welding_processes(electrode_info)
-                recommended_processes.update(processes)
-            
             result = {
                 "status": "success",
                 "input_parameters": {
-                    "base_material": base_material,
-                    "filler_material": filler_material,
-                    "base_thickness": base_thickness,
+                    "from_material": from_material,
+                    "to_material": to_material,
+                    "thickness": thickness,
                     "joint_type": joint_type,
                     "pwht_required": pwht_required
                 },
                 "total_matches": len(matching_wps),
                 "returned_wps_count": len(limited_wps),
-                "recommended_processes": list(recommended_processes),
                 "welding_procedures": limited_wps
             }
             
@@ -332,11 +407,11 @@ class WeldingRecommendationAPI:
                 "welding_procedures": []
             }, indent=2)
     
-    def get_welding_recommendations_dict(self, base_material: str, filler_material: str,
-                                       base_thickness: float, joint_type: str = "Butt", pwht_required: str = "Any") -> Dict:
+    def get_welding_recommendations_dict(self, from_material: str, to_material: str,
+                                       thickness: float, joint_type: str = "Butt", pwht_required: str = "Any") -> Dict:
         """Get welding recommendations as dictionary"""
         try:
-            result_json = self.get_welding_recommendations(base_material, filler_material, base_thickness, joint_type, pwht_required)
+            result_json = self.get_welding_recommendations(from_material, to_material, thickness, joint_type, pwht_required)
             return json.loads(result_json)
         except Exception as e:
             logger.error(f"Error getting welding recommendations as dict: {e}")
@@ -349,36 +424,35 @@ class WeldingRecommendationAPI:
     def get_recommendations(self, input_data: Dict) -> Dict:
         """Get recommendations in the format expected by streamlit app"""
         try:
-            base_material = input_data.get("base_material", "")
-            filler_material = input_data.get("filler_material", "")
-            thickness = input_data.get("thickness", 0.25)
+            from_material = input_data.get("from_material", input_data.get("base_material", ""))
+            to_material = input_data.get("to_material", input_data.get("filler_material", ""))
+            thickness = input_data.get("thickness", 12.7)  # Default 12.7mm (0.5 inch equivalent)
             joint_type = input_data.get("joint_type", "Butt")
             pwht_required = input_data.get("pwht_required", "Any")
             
             # Get RAG information for both materials
-            base_rag_info = self._query_asme_rag_pg_numbers(base_material)
-            filler_rag_info = self._query_asme_rag_pg_numbers(filler_material)
+            from_material_rag_info = self._query_asme_rag_pg_numbers(from_material)
+            to_material_rag_info = self._query_asme_rag_pg_numbers(to_material)
             
             # Determine ASME compatibility
             asme_compatibility = self._build_asme_compatibility_info(
-                base_material, filler_material, base_rag_info, filler_rag_info
+                from_material, to_material, from_material_rag_info, to_material_rag_info
             )
             
             result = self.get_welding_recommendations_dict(
-                base_material, filler_material, thickness, joint_type, pwht_required
+                from_material, to_material, thickness, joint_type, pwht_required
             )
             
             if result.get("status") == "success":
                 return {
                     "compatible_wps": result.get("welding_procedures", []),
-                    "recommended_processes": result.get("recommended_processes", []),
                     "total_matches": result.get("total_matches", 0),
                     "input_parameters": result.get("input_parameters", {}),
                     "asme_compatibility": asme_compatibility,
                     "search_details": {
-                        "base_material_rag": base_rag_info,
-                        "filler_material_rag": filler_rag_info,
-                        "matching_method": "RAG + P/G" if base_rag_info and filler_rag_info else "Fallback matching"
+                        "from_material_rag": from_material_rag_info,
+                        "to_material_rag": to_material_rag_info,
+                        "matching_method": "RAG + P/G" if from_material_rag_info and to_material_rag_info else "Fallback matching"
                     }
                 }
             else:
@@ -389,9 +463,9 @@ class WeldingRecommendationAPI:
                     "error": result.get("message", "Unknown error"),
                     "asme_compatibility": asme_compatibility,
                     "search_details": {
-                        "base_material_rag": base_rag_info,
-                        "filler_material_rag": filler_rag_info,
-                        "matching_method": "RAG + P/G" if base_rag_info and filler_rag_info else "Fallback matching"
+                        "from_material_rag": from_material_rag_info,
+                        "to_material_rag": to_material_rag_info,
+                        "matching_method": "RAG + P/G" if from_material_rag_info and to_material_rag_info else "Fallback matching"
                     }
                 }
                 
@@ -406,36 +480,48 @@ class WeldingRecommendationAPI:
                 "search_details": {"error": str(e)}
             }
     
-    def _build_asme_compatibility_info(self, base_material: str, filler_material: str, 
-                                     base_rag_info: Dict, filler_rag_info: Dict) -> Dict:
+    def _build_asme_compatibility_info(self, from_material: str, to_material: str, 
+                                     from_rag_info: Dict, to_rag_info: Dict) -> Dict:
         """Build ASME compatibility information structure"""
         try:
             # Extract P/G numbers
-            base_p_no = base_rag_info.get("p_no", "") if base_rag_info else ""
-            base_g_no = base_rag_info.get("g_no", "") if base_rag_info else ""
-            filler_p_no = filler_rag_info.get("p_no", "") if filler_rag_info else ""
-            filler_g_no = filler_rag_info.get("g_no", "") if filler_rag_info else ""
+            from_p_no = from_rag_info.get("p_no", "") if from_rag_info else ""
+            from_g_no = from_rag_info.get("g_no", "") if from_rag_info else ""
+            to_p_no = to_rag_info.get("p_no", "") if to_rag_info else ""
+            to_g_no = to_rag_info.get("g_no", "") if to_rag_info else ""
             
-            # Check compatibility
+            # Check compatibility - now we need to check if we can find a WPS that matches both materials
             compatible = False
-            if base_p_no and filler_p_no:
-                base_pg = self._normalize_pg_number(base_p_no)
-                filler_pg = self._normalize_pg_number(filler_p_no)
-                compatible = self._check_pg_compatibility(base_pg, filler_pg)
+            if from_p_no and to_p_no:
+                from_pg = self._normalize_pg_number(from_p_no)
+                to_pg = self._normalize_pg_number(to_p_no)
+                # For compatibility info, we just check if materials are in compatible groups
+                # The actual WPS matching will be done in the matching function
+                compatible_groups = [
+                    {1, 2, 3},  # Low carbon steels
+                    {4, 5, 6},  # Low alloy steels
+                    {8, 9, 10}, # Stainless steels
+                ]
+                
+                # Check if both materials are in the same compatible group
+                for group in compatible_groups:
+                    if from_pg in group and to_pg in group:
+                        compatible = True
+                        break
             
             return {
                 "compatible": compatible,
-                "base_p_number": base_p_no,
-                "base_g_number": base_g_no,
-                "filler_p_number": filler_p_no,
-                "filler_g_number": filler_g_no,
-                "base_spec": base_rag_info.get("spec_no", "") if base_rag_info else "",
-                "base_grade": base_rag_info.get("grade", "") if base_rag_info else "",
-                "filler_spec": filler_rag_info.get("spec_no", "") if filler_rag_info else "",
-                "filler_grade": filler_rag_info.get("grade", "") if filler_rag_info else "",
-                "base_search_method": base_rag_info.get("search_method", "Not found") if base_rag_info else "Not found",
-                "filler_search_method": filler_rag_info.get("search_method", "Not found") if filler_rag_info else "Not found",
-                "has_rag_data": bool(base_rag_info and filler_rag_info)
+                "from_p_number": from_p_no,
+                "from_g_number": from_g_no,
+                "to_p_number": to_p_no,
+                "to_g_number": to_g_no,
+                "from_spec": from_rag_info.get("spec_no", "") if from_rag_info else "",
+                "from_grade": from_rag_info.get("grade", "") if from_rag_info else "",
+                "to_spec": to_rag_info.get("spec_no", "") if to_rag_info else "",
+                "to_grade": to_rag_info.get("grade", "") if to_rag_info else "",
+                "from_search_method": from_rag_info.get("search_method", "Not found") if from_rag_info else "Not found",
+                "to_search_method": to_rag_info.get("search_method", "Not found") if to_rag_info else "Not found",
+                "has_rag_data": bool(from_rag_info and to_rag_info)
             }
             
         except Exception as e:
@@ -455,9 +541,9 @@ def main():
     # Example 1: Basic recommendation
     print("=== Example 1: Basic Recommendation ===")
     result = api.get_welding_recommendations(
-        base_material="A36 Carbon Steel",
-        filler_material="E7018",
-        base_thickness=0.5,
+        from_material="A36",
+        to_material="A36",
+        thickness=12.7,  # 12.7mm thickness
         pwht_required="Any"
     )
     print(result)
@@ -465,9 +551,9 @@ def main():
     # Example 2: Dictionary result with PWHT Required
     print("\n=== Example 2: Dictionary Result with PWHT Required ===")
     result_dict = api.get_welding_recommendations_dict(
-        base_material="SA 516 GR. 70",
-        filler_material="E7018",
-        base_thickness=0.5,
+        from_material="SA 516 GR. 70",
+        to_material="SA 516 GR. 70",
+        thickness=25.0,  # 25mm thickness
         pwht_required="Yes"
     )
     print(f"Status: {result_dict.get('status')}")
@@ -477,9 +563,9 @@ def main():
     # Example 3: Using the streamlit-compatible method
     print("\n=== Example 3: Streamlit-compatible Method ===")
     input_data = {
-        "base_material": "SA 516 GR. 70",
-        "filler_material": "E7018",
-        "thickness": 0.5,
+        "from_material": "SA 516 GR. 70",
+        "to_material": "SA 516 GR. 70",
+        "thickness": 36.0,  # 36mm thickness
         "pwht_required": "Yes",
         "enable_rag": True,
         "max_wps": 3

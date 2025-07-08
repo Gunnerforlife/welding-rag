@@ -204,7 +204,7 @@ def main():
         - 🔍 **RAG-powered material lookup**
         - 📊 **ASME P/G number matching**
         - 🔧 **Compatibility analysis**
-        - 📏 **Thickness range validation**
+        - 📏 **Wall thickness validation (mm)**
         - 🔥 **PWHT requirement filtering**
         - ⚡ **Process recommendations**
         - 📋 **Detailed WPS matching**
@@ -212,11 +212,12 @@ def main():
         
         st.markdown("### 💡 How It Works")
         st.markdown("""
-        1. **Material Analysis**: RAG system searches ASME standards
-        2. **P/G Number Extraction**: Identifies material P/G numbers
-        3. **Compatibility Check**: Validates material compatibility
-        4. **WPS Matching**: Finds suitable welding procedures
-        5. **Recommendation**: Provides ranked recommendations
+        1. **Material Analysis**: RAG system searches ASME standards for both materials
+        2. **P/G Number Extraction**: Identifies P/G numbers for from/to materials
+        3. **Compatibility Check**: Validates P/G number compatibility (direct or reverse match)
+        4. **WPS Matching**: Finds procedures matching both material P/G numbers
+        5. **Thickness Check**: Validates wall thickness against WPS qualified ranges (mm)
+        6. **Recommendation**: Provides ranked recommendations with process details
         """)
         
         st.markdown("### 🔍 Search Methods")
@@ -242,15 +243,17 @@ def main():
         # Add example inputs
         st.markdown("### 📝 Example Inputs")
         st.markdown("""
-        **Base Materials:**
-        - `A36`
-        - `SA-516 Grade 70`
-        - `304 Stainless Steel`
+        **Material Specifications:**
+        - `A36` (Carbon Steel)
+        - `SA-516 Grade 70` (Pressure Vessel Steel)
+        - `304 Stainless Steel` (Austenitic SS)
+        - `API 5L X52` (Pipeline Steel)
+        - `SA 106 GR. B` (Seamless Carbon Steel Pipe)
         
-        **Filler Materials:**
-        - `E7018`
-        - `ER70S-2`
-        - `ER308L`
+        **Common Combinations:**
+        - A36 to A36 (similar materials)
+        - SA-516 GR.70 to SA-516 GR.70 (pressure vessels)
+        - 304 SS to 316L SS (stainless combinations)
         """)
         
         st.markdown("---")
@@ -266,25 +269,25 @@ def main():
         with st.form("welding_params"):
             st.markdown("**Enter material specifications as they appear in ASME standards:**")
             
-            base_material = st.text_input(
-                "Base Material",
+            from_material = st.text_input(
+                "From Material",
                 placeholder="e.g., A36, SA-516 Grade 70, 304 Stainless Steel",
-                help="Enter the base material specification (ASME format preferred for better RAG matching)"
+                help="Enter the first material specification (ASME format preferred for better RAG matching)"
             )
             
-            filler_material = st.text_input(
-                "Filler Material",
-                placeholder="e.g., E7018, ER70S-2, ER308L",
-                help="Enter the filler material specification (electrode/wire specification)"
+            to_material = st.text_input(
+                "To Material",
+                placeholder="e.g., A36, SA-516 Grade 70, 304 Stainless Steel",
+                help="Enter the second material specification (ASME format preferred for better RAG matching)"
             )
             
             thickness = st.number_input(
-                "Thickness (inches)",
-                min_value=0.01,
-                max_value=10.0,
-                value=0.25,
-                step=0.01,
-                help="Enter material thickness in inches"
+                "Wall Thickness (mm)",
+                min_value=0.1,
+                max_value=200.0,
+                value=12.7,
+                step=0.1,
+                help="Enter material wall thickness in millimeters"
             )
             
             col_proc, col_pwht = st.columns(2)
@@ -308,7 +311,7 @@ def main():
                 enable_rag = st.checkbox("Enable RAG Analysis", value=True, help="Use RAG system for P/G number lookup")
                 max_wps = st.slider("Max WPS to Display", min_value=1, max_value=10, value=3, help="Maximum number of WPS to show")
             
-            st.info("💡 Note: Joint type filtering is not available as the WPS database doesn't contain joint type information. PWHT (Post Weld Heat Treatment) filtering is available.")
+            st.info("💡 Note: This system matches WPS based on material-to-material welding (not base+filler). Input wall thickness in mm matches WPS qualified thickness ranges. Joint type filtering is not available as the WPS database doesn't contain joint type information. PWHT (Post Weld Heat Treatment) filtering is available.")
             
             submitted = st.form_submit_button("🔍 Get Recommendations", type="primary")
     
@@ -316,13 +319,13 @@ def main():
         st.markdown("### 📊 Recommendations")
         
         if submitted:
-            if not base_material or not filler_material:
-                st.error("Please enter both base material and filler material.")
+            if not from_material or not to_material:
+                st.error("Please enter both from material and to material.")
             else:
                 # Prepare input data
                 input_data = {
-                    "base_material": base_material,
-                    "filler_material": filler_material,
+                    "from_material": from_material,
+                    "to_material": to_material,
                     "thickness": thickness,
                     "joint_type": "Any", # Joint type is not used for WPS filtering
                     "pwht_required": pwht_required,
@@ -356,26 +359,26 @@ def main():
                             col_rag1, col_rag2 = st.columns(2)
                             
                             with col_rag1:
-                                st.markdown("**Base Material RAG:**")
-                                base_rag = search_details.get("base_material_rag")
-                                if base_rag:
-                                    st.write(f"- P-No: {base_rag.get('p_no', 'Not found')}")
-                                    st.write(f"- G-No: {base_rag.get('g_no', 'Not found')}")
-                                    st.write(f"- Spec: {base_rag.get('spec_no', 'Not found')}")
-                                    st.write(f"- Grade: {base_rag.get('grade', 'Not found')}")
-                                    st.write(f"- Method: {base_rag.get('search_method', 'Unknown')}")
+                                st.markdown("**From Material RAG:**")
+                                from_rag = search_details.get("from_material_rag")
+                                if from_rag:
+                                    st.write(f"- P-No: {from_rag.get('p_no', 'Not found')}")
+                                    st.write(f"- G-No: {from_rag.get('g_no', 'Not found')}")
+                                    st.write(f"- Spec: {from_rag.get('spec_no', 'Not found')}")
+                                    st.write(f"- Grade: {from_rag.get('grade', 'Not found')}")
+                                    st.write(f"- Method: {from_rag.get('search_method', 'Unknown')}")
                                 else:
                                     st.write("❌ No RAG data found")
                             
                             with col_rag2:
-                                st.markdown("**Filler Material RAG:**")
-                                filler_rag = search_details.get("filler_material_rag")
-                                if filler_rag:
-                                    st.write(f"- P-No: {filler_rag.get('p_no', 'Not found')}")
-                                    st.write(f"- G-No: {filler_rag.get('g_no', 'Not found')}")
-                                    st.write(f"- Spec: {filler_rag.get('spec_no', 'Not found')}")
-                                    st.write(f"- Grade: {filler_rag.get('grade', 'Not found')}")
-                                    st.write(f"- Method: {filler_rag.get('search_method', 'Unknown')}")
+                                st.markdown("**To Material RAG:**")
+                                to_rag = search_details.get("to_material_rag")
+                                if to_rag:
+                                    st.write(f"- P-No: {to_rag.get('p_no', 'Not found')}")
+                                    st.write(f"- G-No: {to_rag.get('g_no', 'Not found')}")
+                                    st.write(f"- Spec: {to_rag.get('spec_no', 'Not found')}")
+                                    st.write(f"- Grade: {to_rag.get('grade', 'Not found')}")
+                                    st.write(f"- Method: {to_rag.get('search_method', 'Unknown')}")
                                 else:
                                     st.write("❌ No RAG data found")
                         
@@ -432,11 +435,11 @@ def main():
                                 """, unsafe_allow_html=True)
                             
                             with col_b:
-                                processes = recommendations.get("recommended_processes", [])
+                                total_matches = recommendations.get("total_matches", 0)
                                 st.markdown(f"""
                                 <div class="metric-card">
-                                    <h3>{len(processes)}</h3>
-                                    <p>Processes</p>
+                                    <h3>{total_matches}</h3>
+                                    <p>Total Matches</p>
                                 </div>
                                 """, unsafe_allow_html=True)
                             
@@ -449,17 +452,7 @@ def main():
                                 </div>
                                 """, unsafe_allow_html=True)
                             
-                            # Show recommended processes
-                            if processes:
-                                st.markdown("**Recommended Processes:**")
-                                process_cols = st.columns(len(processes))
-                                for i, process in enumerate(processes):
-                                    with process_cols[i]:
-                                        st.markdown(f"""
-                                        <div style="text-align: center; padding: 0.5rem; background: #e3f2fd; border-radius: 5px;">
-                                            <strong>{process}</strong>
-                                        </div>
-                                        """, unsafe_allow_html=True)
+
                             
                             # Show compatible WPS
                             st.markdown("**Compatible WPS Details:**")
@@ -476,6 +469,14 @@ def main():
                                         st.write(f"- Base Material: {wps.get('material_from', 'N/A')}")
                                         st.write(f"- Filler Material: {wps.get('material_to', 'N/A')}")
                                         st.write(f"- Electrode: {wps.get('electrode', 'N/A')}")
+                                        
+                                        # Show welding process for this WPS
+                                        welding_processes = wps.get('welding_process', [])
+                                        if welding_processes:
+                                            process_str = ", ".join(welding_processes)
+                                            st.write(f"- Welding Process: {process_str}")
+                                        else:
+                                            st.write("- Welding Process: Not determined")
                                     
                                     with col_q:
                                         st.write("**Parameters:**")

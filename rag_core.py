@@ -472,7 +472,7 @@ class ASMEMaterialRAG:
         # Enhanced patterns to handle various specification types
         spec_patterns = [
             # API patterns (check first to avoid conflicts)
-            r'API\s+5L\s+X?(\d+)',                 # API 5L X60, API 5L 60
+            r'API\s+5L\s+(?:GR\.?\s+|GRADE\s+)?(?:X\s*)?(\w+)',  # API 5L X60, API 5L grade B, API 5L GR. B
             # ASME patterns
             r'(?:A\s+OR\s+)?S?A[-–]?\s*(\d+)',     # SA-516, A or SA-516, SA 516
             r'ASTM\s+A\s*(\d+)',                   # ASTM A 105 -> match A 105
@@ -507,22 +507,27 @@ class ASMEMaterialRAG:
         for pattern in spec_patterns:
             match = re.search(pattern, material_clean)
             if match:
-                spec_num = match.group(1)  # The number part
                 if 'API' in pattern:
                     spec_type = 'API'
-                    # For API 5L, the grade is the X number (like X60)
-                    api_match = re.search(r'API\s+5L\s+X(\d+)', material_clean)
-                    if api_match:
-                        grade_info = api_match.group(1)  # Just the number part (60, 65, etc.)
+                    # For API 5L, the grade is extracted from the pattern match
+                    grade_info = match.group(1)  # Can be letters (B, A) or numbers (60, 65, etc.)
+                    # Remove X prefix if present
+                    if grade_info.startswith('X'):
+                        grade_info = grade_info[1:]
                 elif 'CSA' in pattern:
+                    spec_num = match.group(1)  # The number part
                     spec_type = 'CSA'
                 elif 'JIS' in pattern:
+                    spec_num = match.group(1)  # The number part
                     spec_type = 'JIS'
                 elif 'MSS' in pattern:
+                    spec_num = match.group(1)  # The number part
                     spec_type = 'MSS'
                 elif 'A860' in pattern:
+                    spec_num = match.group(1)  # The number part
                     spec_type = 'A860'
                 else:
+                    spec_num = match.group(1)  # The number part
                     spec_type = 'ASME'
                 
                 print(f"Pattern '{pattern}' matched, spec_num='{spec_num}', type='{spec_type}'")
@@ -575,7 +580,7 @@ class ASMEMaterialRAG:
         # Enhanced spec extraction patterns for all types
         spec_patterns = [
             # API patterns (check first to avoid conflicts)
-            r'API\s+5L\s+(?:X\s*)?(\w+)',           # API 5L X60, API 5L X 60, API 5L A
+            r'API\s+5L\s+(?:GR\.?\s+|GRADE\s+)?(?:X\s*)?(\w+)',  # API 5L X60, API 5L grade B, API 5L GR. B
             # ASME patterns
             r'(?:A\s+OR\s+)?S?A[-–]?\s*(\d+)',      # SA-516, A or SA-516, SA 516
             r'ASTM\s+A\s*(\d+)',                    # ASTM A 105 -> match A 105
